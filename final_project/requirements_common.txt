@@ -32,6 +32,7 @@ Pygments==2.11.2
 pyparsing==3.0.8
 python-dateutil==2.8.2
 pytz==2022.1
+PyYAML==6.0
 pyzmq==22.3.0
 scikit-learn==1.0.2
 scipy==1.8.0
