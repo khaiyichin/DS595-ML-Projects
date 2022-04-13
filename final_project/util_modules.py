@@ -115,22 +115,22 @@ class DynamicNetwork(torch.nn.Module):
                 sys.stdout.flush()
 
         else:
-            self.batch_norm_lst = [False]
+            self.batch_norm_lst = []
 
         # Assign dropout layers (optional)
         if ("dropout_rate_lst" in parameters.keys()):
 
             self.dropout_rate_lst = parameters["dropout_rate_lst"]
 
-            if len(self.batch_norm_lst) != self.num_fc_layers - 1:
+            if len(self.dropout_rate_lst) != self.num_fc_layers - 1:
                 raise Exception("The number of dropout rates doesn't match the number of fully connected layers - 1.")
 
             if (self.verbose):
-                print("Dropout rates:\t\t\t\t{}".format(self.batch_norm_lst))
+                print("Dropout rates:\t\t\t\t{}".format(self.dropout_rate_lst))
                 sys.stdout.flush()
 
         else:
-            self.dropout_rate_lst = [False]
+            self.dropout_rate_lst = []
 
         self.setup_network()
 
@@ -142,23 +142,23 @@ class DynamicNetwork(torch.nn.Module):
 
         temp_lst = []
 
-        for neuron_num, batch_norm, dropout, activation in zip(self.neuron_num_lst, self.batch_norm_lst, self.dropout_rate_lst, self.activations):
+        for ind in range(self.num_fc_layers - 1):
 
             # Create fully connected layer
-            temp_linear_layer = torch.nn.Linear(neuron_num[0], neuron_num[1])
+            temp_linear_layer = torch.nn.Linear(self.neuron_num_lst[ind][0], self.neuron_num_lst[ind][1])
             temp_lst.append(temp_linear_layer)
 
             # Create batch normalization layer
-            if batch_norm:
-                temp_lst.append(torch.nn.BatchNorm1d(neuron_num[1]))
+            if self.batch_norm_lst:
+                temp_lst.append(torch.nn.BatchNorm1d(self.neuron_num_lst[ind][1]))
 
             # Create dropout layer
-            if dropout:
-                temp_lst.append(torch.nn.Dropout(dropout))
+            if self.dropout_rate_lst:
+                temp_lst.append(torch.nn.Dropout(self.dropout_rate_lst[ind]))
 
             # Create activation layer
-            if activation:
-                temp_lst.append(activation)
+            if self.activations:
+                temp_lst.append(self.activations[ind])
 
         # Create final output layer
         temp_lst.append(torch.nn.Linear(self.neuron_num_lst[-1][0], self.neuron_num_lst[-1][1]))
@@ -235,7 +235,7 @@ class NNTrainer():
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         if self.verbose:
             print("Device:\t\t\t{}".format(self.device))
-            if torch.cuda.is_available(): print('\t\t\t\t', torch.cuda.get_device_name(0))
+            if torch.cuda.is_available(): print('\t\t\t', torch.cuda.get_device_name(0))
 
             sys.stdout.flush()
 
