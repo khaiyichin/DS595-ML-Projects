@@ -336,13 +336,12 @@ class NNTrainer():
             for X, y in train_loader:
 
                 optimizer.zero_grad() # set gradients to zero
-                data = X
 
                 # Make predictions
-                output = network(data.to(network.device))
+                output = network(X.to(network.device))
 
                 # Find the loss and then backpropagate it
-                loss = self.criterion(output, y)
+                loss = self.criterion(output, y.to(network.device))
                 loss.backward()
 
                 # Update weights
