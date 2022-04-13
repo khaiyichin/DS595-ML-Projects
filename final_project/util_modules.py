@@ -60,15 +60,6 @@ class DynamicNetwork(torch.nn.Module):
 
         self.verbose = verbose
 
-        # Setup device
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.to(self.device)
-        if self.verbose:
-            print("Device used for current network:\t\t{}".format(self.device))
-            if torch.cuda.is_available(): print(torch.cuda.get_device_name(0))
-
-            sys.stdout.flush()
-
         # Assign fully connected layers
         if ("num_fc_layers" in parameters.keys()):
             self.num_fc_layers = int(parameters["num_fc_layers"])
@@ -240,6 +231,14 @@ class NNTrainer():
         self.networks = []
         self.optimizers = []
 
+        # Setup device
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        if self.verbose:
+            print("Device:\t\t\t{}".format(self.device))
+            if torch.cuda.is_available(): print('\t\t\t\t', torch.cuda.get_device_name(0))
+
+            sys.stdout.flush()
+
         # Instantiate k neural networks and optimizers based on parameters (k-fold cross validation)
         for i in range(self.parameters["k_fold_cv"]):
 
@@ -247,7 +246,7 @@ class NNTrainer():
                 print("\nSetting up {0} out of {1} networks:\n".format(i+1, self.parameters["k_fold_cv"]))
                 sys.stdout.flush()
 
-            nn = DynamicNetwork(self.parameters, self.verbose)
+            nn = DynamicNetwork(self.parameters, self.verbose).to(self.device)
             opt = self.get_optimizer(self.parameters["optimizer_str"], nn)
 
             self.networks.append(nn)
@@ -338,10 +337,10 @@ class NNTrainer():
                 optimizer.zero_grad() # set gradients to zero
 
                 # Make predictions
-                output = network(X.to(network.device))
+                output = network(X.to(self.device))
 
                 # Find the loss and then backpropagate it
-                loss = self.criterion(output, y.to(network.device))
+                loss = self.criterion(output, y.to(self.device))
                 loss.backward()
 
                 # Update weights
