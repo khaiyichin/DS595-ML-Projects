@@ -421,8 +421,8 @@ class NNTrainer():
 
             accuracy.append( skmetrics.accuracy_score(y_act_lst, y_pred_lst) )
 
-            mac_precision.append( skmetrics.precision_score(y_act_lst, y_pred_lst, average='macro') )
-            mic_precision.append( skmetrics.precision_score(y_act_lst, y_pred_lst, average='micro') )
+            mac_precision.append( skmetrics.precision_score(y_act_lst, y_pred_lst, average='macro', zero_division=0) )
+            mic_precision.append( skmetrics.precision_score(y_act_lst, y_pred_lst, average='micro', zero_division=0) )
 
             mac_recall.append( skmetrics.recall_score(y_act_lst, y_pred_lst, average='macro') )
             mic_recall.append( skmetrics.recall_score(y_act_lst, y_pred_lst, average='micro') )
@@ -491,6 +491,13 @@ class NNTrainer():
         self.parameters["standardize"] = yaml_config["standardize"]
         self.parameters["normalize"] = yaml_config["normalize"]["bool"]
         self.parameters["normalization_type"] = yaml_config["normalize"]["type"]
+
+        if self.verbose:
+            if self.parameters["standardized"]:
+                print("Data will be z-score standardized (mean and standard deviation).")
+
+            elif self.parameters["normalize"]:
+                print("Data will be normalized (minimum and maximum values).")
 
         if self.parameters["standardize"] and self.parameters["normalize"]:
             raise Exception("Only one type of preprocessor can be used at a time.")
