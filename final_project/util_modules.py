@@ -493,7 +493,7 @@ class NNTrainer():
         self.parameters["normalization_type"] = yaml_config["normalize"]["type"]
 
         if self.verbose:
-            if self.parameters["standardized"]:
+            if self.parameters["standardize"]:
                 print("Data will be z-score standardized (mean and standard deviation).")
 
             elif self.parameters["normalize"]:
