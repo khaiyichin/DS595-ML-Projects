@@ -7,6 +7,17 @@ import os
 import sys
 import sklearn.metrics as skmetrics
 from datetime import datetime
+from enum import Enum
+import argparse
+
+def parse_arguments():
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="DS 595-ML Final Project")
+    parser.add_argument('config', type=str, help='path to configuration file')
+    parser.add_argument('working_dir', type=str, help='working directory to run the training')
+    parser.add_argument('--no_save', action="store_true", help='path to configuration file')
+
+    return parser.parse_args()
 
 def normalize(pandas_df, norm_type):
     """Normalize dataframe values.
@@ -214,24 +225,84 @@ class DynamicNetwork(torch.nn.Module):
 
         return self.network(x)
 
-class NNTrainer():
+class NNUtils():
+
+    class UtilType(Enum):
+        TRAINER = 1
+        EVALUATOR = 2
 
     def __init__(self, args, verbose=True):
 
+        # Initialize class variables
         self.verbose = verbose
 
         self.no_save = args.no_save
 
-        # Parse configuration file
-        self.read_yaml_config(args.config)
-
-        # Store data
-        self.read_and_store_data()
-
         self.networks = []
         self.optimizers = []
 
-        # Setup device
+        self.preprocessing_params = []
+
+        self.train_loaders = []
+
+        self.training_data = {"filenames": [], "input": [], "output": []}
+        self.testing_data = {"filenames": [], "input": [], "output": []}
+
+    def standardize(self, pandas_df, params=None):
+        """Standardize dataframe values using Z-score standardization.
+
+        Args:
+            pandas_df: Pandas dataframe.
+            params: Precomputed parameters.
+
+        Returns:
+            Tuple of pandas dataframe with standardized values and (mean, standard deviation) tuple.
+        """
+        if params:
+            return pandas_df.sub(params[0], axis=1) / params[1], (params[0], params[1])
+        else:
+            return pandas_df.sub(pandas_df.mean(0), axis=1) / pandas_df.std(0), (pandas_df.mean(0), pandas_df.std(0) )
+
+    def normalize(self, pandas_df, params=None):
+        """Normalize dataframe values.
+
+        Args:
+            pandas_df: Pandas dataframe.
+            norm_type: 'full' for normalization using all the value in the dataframe,
+                    'freq' for normalization along each column.
+            params: Precomputed parameters.
+
+        Returns:
+            Tuple of pandas dataframe with normalized values and (min, max) tuple.
+        """
+
+        if self.parameters["normalization_type"] == 'full': # across the entire dataset
+
+            if params:
+                min_val, max_val = params
+            else:
+                min_val = pandas_df.min().min()
+                max_val = pandas_df.max().max()
+
+            return (pandas_df - min_val) / (max_val - min_val), (min_val, max_val)
+
+        elif self.parameters["normalization_type"] == 'freq': # across each frequency (feature)
+
+            if params:
+                min_vals, max_vals = params
+            else:
+                min_vals = pandas_df.min()
+                max_vals = pandas_df.max()
+
+            diff = max_vals - min_vals
+
+            return pandas_df.sub(min_vals, axis=1).div(diff, axis=1), (min_vals, max_vals)
+
+        else:
+            raise Exception('Unknown normalization type string.')
+
+    def setup_device(self):
+
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         if self.verbose:
             if torch.cuda.is_available():
@@ -242,7 +313,109 @@ class NNTrainer():
 
             sys.stdout.flush()
 
-        # Instantiate k neural networks and optimizers based on parameters (k-fold cross validation)
+    def setup_data_loaders(self, inputs, outputs):
+
+        dataset = torch.utils.data.TensorDataset(inputs, outputs)
+        data_loader = torch.utils.data.DataLoader(dataset, batch_size=self.parameters["batch_size"],
+                                                  shuffle=True)
+
+        return data_loader
+
+    def read_yaml_config(self, config_file):
+        yaml_config = None
+
+        # Read YAML configuration file
+        with open(config_file, 'r') as fopen:
+            try:
+                yaml_config = yaml.safe_load(fopen)
+            except yaml.YAMLError as exception:
+                print(exception)
+
+        # Display input arguments
+        print('\n\t' + '='*50 + ' Inputs ' + '='*50 + '\n')
+        print('\tConfig file\t: ' + os.path.abspath(config_file))
+        print('\n\t' + '='*48 + ' End Inputs ' + '='*48  + '\n')
+
+        # Displayed processed arguments
+        print('\n\t\t\t\t\t' + '='*15 + ' Processed Config ' + '='*15 + '\n')
+        print('\t\t\t\t\t\t', end='')
+        for line in yaml.dump(yaml_config, indent=4, default_flow_style=False):
+            if line == '\n':
+                print(line, '\t\t\t\t\t\t',  end='')
+            else:
+                print(line, end='')
+        print('\r', end='') # reset the cursor for print
+        print('\n\t\t\t\t\t' + '='*13 + ' End Processed Config ' + '='*13  + '\n')
+
+        self.parameters = {}
+
+        # Assign common parameters
+
+        # Hyperparameters
+        self.parameters["k_fold_cv"] = int(yaml_config["kFoldCrossValidation"])
+        self.parameters["num_fc_layers"] = yaml_config["numberOfFullyConnectedLayers"]
+        self.parameters["neuron_num_lst"] = yaml_config["neuronNumberList"]
+        self.parameters["activation_str_lst"] = yaml_config["activationFunctionStringList"]
+        self.parameters["batch_size"] = int(yaml_config["batchSize"])
+        self.parameters["learning_rate"] = float(yaml_config["learningRate"])
+
+        # Preprocessors
+        self.parameters["standardize"] = yaml_config["standardize"]
+        self.parameters["normalize"] = yaml_config["normalize"]["bool"]
+        self.parameters["normalization_type"] = yaml_config["normalize"]["type"]
+
+        if self.verbose:
+            if self.parameters["standardize"]:
+                print("Data will be z-score standardized (mean and standard deviation).")
+
+            elif self.parameters["normalize"]:
+                print("Data will be normalized (minimum and maximum values).")
+
+        if self.parameters["standardize"] and self.parameters["normalize"]:
+            raise Exception("Only one type of preprocessor can be used at a time.")
+
+        # Path parameters
+        self.parameters["data_input_folder"] = yaml_config["paths"]["dataInputFolder"]
+        self.parameters["output_folder"] = yaml_config["paths"]["outputFolder"]
+        self.parameters["training_data"] = yaml_config["paths"]["trainingData"]
+        self.parameters["analytics_save_name"] = yaml_config["paths"]["analyticsSaveName"]
+
+        # Assign specific parameters
+        if self.class_type == self.UtilType.TRAINER: # trainer params
+
+            # Assign target number of epochs to run
+            self.parameters["target_epochs"] = int(yaml_config["targetEpochs"])
+
+            # Assign optimizer
+            self.parameters["optimizer_str"] = yaml_config["optimizerString"]
+
+            self.parameters["model_save_name"] = yaml_config["paths"]["modelSaveName"]
+            self.parameters["losses_save_name"] = yaml_config["paths"]["lossesSaveName"]
+
+            # Assign optional parameters
+            try:
+                self.parameters["batch_norm_lst"] = yaml_config["optional"]["batchNormalizationBooleanList"]
+            except Exception as e:
+                if self.verbose: print("Not setting batch normalization layers.")
+
+            try:
+                self.parameters["dropout_rate_lst"] = yaml_config["optional"]["dropoutRateList"]
+            except Exception as e:
+                if self.verbose: print("Not setting dropout layers.")
+
+        elif self.class_type == self.UtilType.EVALUATOR: # evaluator params
+            self.parameters["model_input_folder"] = yaml_config["paths"]["modelInputFolder"]
+            self.parameters["models"] = yaml_config["paths"]["models"]
+            self.parameters["testing_data"] = yaml_config["paths"]["testingData"]
+
+        else:
+            raise Exception("Unknown caller type for read_yaml_config function.")
+
+        sys.stdout.flush() # flush print statements
+
+    def setup_networks(self, loaded_state_dicts=None):
+
+        # Setup for k-fold cross validation models
         for i in range(self.parameters["k_fold_cv"]):
 
             if self.verbose:
@@ -250,81 +423,48 @@ class NNTrainer():
                 sys.stdout.flush()
 
             nn = DynamicNetwork(self.parameters, self.verbose).to(self.device)
-            opt = self.get_optimizer(self.parameters["optimizer_str"], nn)
+
+            if self.class_type == self.UtilType.TRAINER:
+                opt = self.get_optimizer(self.parameters["optimizer_str"], nn)
+                self.optimizers.append(opt)
+
+                if self.verbose:
+                    print("Optimizer:\n{}\n".format(opt))
+                    sys.stdout.flush()
+
+            elif self.class_type == self.UtilType.EVALUATOR:
+                nn.load_state_dict(loaded_state_dicts[i]["model_state_dict"])
+                self.preprocessing_params = loaded_state_dicts[i]["preprocessing_params"]
+                nn.eval()
+
+            else:
+                raise Exception("Unknown caller type for the setup_networks function.")
 
             self.networks.append(nn)
-            self.optimizers.append(opt)
 
-            if self.verbose:
-                print("Optimizer:\n{}\n".format(opt))
-                sys.stdout.flush()
+    def get_optimizer(self, opt_str, network):
 
-        # Assign loss function
-        self.criterion = torch.nn.CrossEntropyLoss()
+        if opt_str.lower() == "sgd":
+            return torch.optim.SGD(network.parameters(), lr=self.parameters["learning_rate"]) # using no momentum
 
-        # Set up loggers
-        self.losses_log = []
-        self.analytics = []
-
-
-    def standardize(self, pandas_df):
-        """Standardize dataframe values using Z-score standardization.
-
-        Args:
-            pandas_df: Pandas dataframe.
-
-        Returns:
-            Tuple of pandas dataframe with standardized values and (mean, standard deviation) tuple.
-        """
-        return pandas_df.sub(pandas_df.mean(0), axis=1) / pandas_df.std(0), (pandas_df.mean(0), pandas_df.std(0) )
-
-
-    def normalize(self, pandas_df):
-        """Normalize dataframe values.
-
-        Args:
-            pandas_df: Pandas dataframe.
-            norm_type: 'full' for normalization using all the value in the dataframe,
-                    'freq' for normalization along each column.
-
-        Returns:
-            Tuple of pandas dataframe with normalized values and (min, max) tuple.
-        """
-
-        if self.parameters["normalization_type"] == 'full': # across the entire dataset
-            min_val = pandas_df.min().min()
-            max_val = pandas_df.max().max()
-
-            return (pandas_df - min_val) / (max_val - min_val), (min_val, max_val)
-
-        elif self.parameters["normalization_type"] == 'freq': # across each frequency (feature)
-            min_vals = pandas_df.min()
-            max_vals = pandas_df.max()
-            diff = max_vals - min_vals
-
-            return pandas_df.sub(min_vals, axis=1).div(diff, axis=1), (min_vals, max_vals)
+        elif opt_str.lower() == "adam":
+            return torch.optim.Adam(network.parameters(), lr=self.parameters["learning_rate"])
 
         else:
-            raise Exception('Unknown normalization type string.')
+            raise Exception("The optimizer " + opt_str + " is not supported currently.")
 
     def read_and_store_data(self):
 
-        self.train_loaders = []
-        self.test_loaders = []
-
-        self.training_data = {"filenames": [], "input": [], "output": []}
-        self.testing_data = {"filenames": [], "input": [], "output": []}
-
-        self.preprocessing_params = []
-
         # Store training data and set up data loaders
         for csv_file in self.parameters["training_data"]:
-            pd_data = pd.read_csv(os.path.join(self.parameters["input_folder"], csv_file))
+            pd_data = pd.read_csv(os.path.join(self.parameters["data_input_folder"], csv_file))
 
             # Check whether to preprocess data
             if self.parameters["standardize"]:
                 pd_data_processed, params = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]))
                 self.preprocessing_params.append(params)
+
+                # TODO: can check to see if the loaded params match
 
             elif self.parameters["normalize"]:
                 pd_data_processed, params = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]))
@@ -344,38 +484,72 @@ class NNTrainer():
             self.training_data["input"].append(input)
             self.training_data["output"].append(output)
 
-        # Store testing data
-        for csv_file in self.parameters["testing_data"]:
-            pd_data = pd.read_csv(os.path.join(self.parameters["input_folder"], csv_file))
+        # Store testing data (only applicable to evaluators)
+        if self.class_type == self.UtilType.EVALUATOR:
 
-            # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe
-            input = torch.tensor(pd_data.iloc[:, :-5].values, dtype=torch.float32)
-            output = torch.tensor(pd_data.iloc[:,-5:].values, dtype=torch.float32)
+            for ind, csv_file in enumerate(self.parameters["testing_data"]):
+                pd_data = pd.read_csv(os.path.join(self.parameters["data_input_folder"], csv_file))
 
-            self.test_loaders.append(self.setup_data_loaders(input, output))
+                # Apply preprocessing from training data
+                if self.parameters["standardize"]:
+                    pd_data_processed, _ = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]),
+                                                            self.preprocessing_params[ind])
 
-            self.testing_data["filenames"].append(csv_file)
-            self.testing_data["input"].append(input)
-            self.testing_data["output"].append(output)
+                elif self.parameters["normalize"]:
+                    pd_data_processed, _ = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]),
+                                                          self.preprocessing_params[ind])
 
-    def setup_data_loaders(self, inputs, outputs):
+                # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe
+                input = torch.tensor(pd_data.iloc[:, :-5].values, dtype=torch.float32)
+                output = torch.tensor(pd_data.iloc[:,-5:].values, dtype=torch.float32)
 
-        dataset = torch.utils.data.TensorDataset(inputs, outputs)
-        data_loader = torch.utils.data.DataLoader(dataset, batch_size=self.parameters["batch_size"],
-                                                  shuffle=True)
+                self.testing_data["filenames"].append(csv_file)
+                self.testing_data["input"].append(input)
+                self.testing_data["output"].append(output)
 
-        return data_loader
+class NNTrainer(NNUtils):
 
-    def get_optimizer(self, opt_str, network):
+    def __init__(self, args, verbose=True):
 
-        if opt_str.lower() == "sgd":
-            return torch.optim.SGD(network.parameters(), lr=self.parameters["learning_rate"]) # using no momentum
+        super().__init__(args, verbose)
 
-        elif opt_str.lower() == "adam":
-            return torch.optim.Adam(network.parameters(), lr=self.parameters["learning_rate"])
+        self.class_type = self.UtilType.TRAINER # assign identity to this class
 
-        else:
-            raise Exception("The optimizer " + opt_str + " is not supported currently.")
+        # Parse configuration file
+        self.read_yaml_config(args.config)
+
+        # Store data
+        self.read_and_store_data()
+
+        # Setup device
+        self.setup_device()
+
+        # Instantiate k neural networks and optimizers based on parameters (k-fold cross validation)
+        self.setup_networks()
+
+        # Assign loss function
+        self.criterion = torch.nn.CrossEntropyLoss()
+
+        # Set up loggers
+        self.losses_log = []
+        self.analytics = []
+
+    def run(self):
+
+        # Run k-fold cross validation
+        self.k_fold_cross_validation()
+
+        # Save network and optimizer and analytics
+        save_time = datetime.now()
+
+        if not self.no_save:
+            self.save_models(save_time)
+            self.save_analytics(save_time)
+
+    def k_fold_cross_validation(self):
+
+        for i in range(self.parameters["k_fold_cv"]):
+            self.train(self.train_loaders[i], self.networks[i], self.optimizers[i])
 
     def train(self, train_loader, network, optimizer):
 
@@ -415,7 +589,7 @@ class NNTrainer():
             # Store analytics for current epoch
             losses.append( float(loss.item())/self.parameters["batch_size"] )
 
-            if self.verbose and i % 500 == 0:
+            if self.verbose and i % int(self.parameters["target_epochs"]/10) == 0:
                 print("\tEpoch {0}: Loss = {1}".format(i, losses[-1]))
                 sys.stdout.flush()
 
@@ -441,100 +615,6 @@ class NNTrainer():
 
         self.losses_log.append(losses)
         self.analytics.append(analytics_df)
-
-    def run(self):
-
-        # Run k-fold cross validation
-        self.k_fold_cross_validation()
-
-        # Save network and optimizer and analytics
-        save_time = datetime.now()
-
-        if not self.no_save:
-            self.save_models(save_time)
-            self.save_analytics(save_time)
-
-    def k_fold_cross_validation(self):
-
-        for i in range(self.parameters["k_fold_cv"]):
-            self.train(self.train_loaders[i], self.networks[i], self.optimizers[i])
-
-    def read_yaml_config(self, config_file):
-        yaml_config = None
-
-        # Read YAML configuration file
-        with open(config_file, 'r') as fopen:
-            try:
-                yaml_config = yaml.safe_load(fopen)
-            except yaml.YAMLError as exception:
-                print(exception)
-
-        # Display input arguments
-        print('\n\t' + '='*50 + ' Inputs ' + '='*50 + '\n')
-        print('\tConfig file\t: ' + os.path.abspath(config_file))
-        print('\n\t' + '='*48 + ' End Inputs ' + '='*48  + '\n')
-
-        # Displayed processed arguments
-        print('\n\t\t\t\t\t' + '='*15 + ' Processed Config ' + '='*15 + '\n')
-        print('\t\t\t\t\t\t', end='')
-        for line in yaml.dump(yaml_config, indent=4, default_flow_style=False):
-            if line == '\n':
-                print(line, '\t\t\t\t\t\t',  end='')
-            else:
-                print(line, end='')
-        print('\r', end='') # reset the cursor for print
-        print('\n\t\t\t\t\t' + '='*13 + ' End Processed Config ' + '='*13  + '\n')
-
-        self.parameters = {}
-
-        # Assign preprocessors
-        self.parameters["standardize"] = yaml_config["standardize"]
-        self.parameters["normalize"] = yaml_config["normalize"]["bool"]
-        self.parameters["normalization_type"] = yaml_config["normalize"]["type"]
-
-        if self.verbose:
-            if self.parameters["standardize"]:
-                print("Data will be z-score standardized (mean and standard deviation).")
-
-            elif self.parameters["normalize"]:
-                print("Data will be normalized (minimum and maximum values).")
-
-        if self.parameters["standardize"] and self.parameters["normalize"]:
-            raise Exception("Only one type of preprocessor can be used at a time.")
-
-        # Assign optimizer
-        self.parameters["optimizer_str"] = yaml_config["optimizerString"]
-
-        # Assign hyperparameters
-        self.parameters["k_fold_cv"] = int(yaml_config["kFoldCrossValidation"])
-        self.parameters["num_fc_layers"] = yaml_config["numberOfFullyConnectedLayers"]
-        self.parameters["neuron_num_lst"] = yaml_config["neuronNumberList"]
-        self.parameters["activation_str_lst"] = yaml_config["activationFunctionStringList"]
-        self.parameters["batch_size"] = int(yaml_config["batchSize"])
-        self.parameters["target_epochs"] = int(yaml_config["targetEpochs"])
-        self.parameters["learning_rate"] = float(yaml_config["learningRate"])
-
-        # Assign optional parameters
-        try:
-            self.parameters["batch_norm_lst"] = yaml_config["optional"]["batchNormalizationBooleanList"]
-        except Exception as e:
-            if self.verbose: print("Not setting batch normalization layers.")
-
-        try:
-            self.parameters["dropout_rate_lst"] = yaml_config["optional"]["dropoutRateList"]
-        except Exception as e:
-            if self.verbose: print("Not setting dropout layers.")
-
-        # Assign path parameters
-        self.parameters["input_folder"] = yaml_config["paths"]["inputFolder"]
-        self.parameters["output_folder"] = yaml_config["paths"]["outputFolder"]
-        self.parameters["training_data"] = yaml_config["paths"]["trainingData"]
-        self.parameters["testing_data"] = yaml_config["paths"]["testingData"]
-        self.parameters["model_save_name"] = yaml_config["paths"]["modelSaveName"]
-        self.parameters["losses_save_name"] = yaml_config["paths"]["lossesSaveName"]
-        self.parameters["analytics_save_name"] = yaml_config["paths"]["analyticsSaveName"]
-
-        sys.stdout.flush() # flush print statements
 
     def save_models(self, curr_time):
         """Save neural network models.
@@ -587,62 +667,141 @@ class NNTrainer():
 
             df.to_csv(analytics_file_path, index=False)
 
-class NNTester():
+class NNEvaluator(NNUtils):
 
     # Need to apply log_softmax for validation and testing
 
-    # NEed to call model.eval()
+    def __init__(self, args, verbose=True):
 
-    def __init__(self):
-        pass
+        super().__init__(args, verbose)
 
+        self.class_type = self.UtilType.EVALUATOR
+
+        self.read_yaml_config(args.config)
+
+        self.setup_device()
+
+        self.import_models()
+
+        self.read_and_store_data()
+
+    def import_models(self):
+
+        loaded_state_dicts = []
+
+        # Iterate through all k models
+        for i in range(self.parameters["k_fold_cv"]):
+
+            loaded_state_dicts.append(
+                torch.load( os.path.join(self.parameters["model_input_folder"],
+                                         self.parameters["models"][i]), map_location=self.device ) )
+
+        self.setup_networks(loaded_state_dicts)
+
+    def run(self):
+
+        self.evaluate_models()
+
+        curr_time = datetime.now()
+
+        self.save_metrics(curr_time)
 
     def evaluate_models(self):
 
-        def multi_acc(y_pred, y_test):
-            y_pred_softmax = torch.log_softmax(y_pred, dim = 1)
-            _, y_pred_tags = torch.max(y_pred_softmax, dim = 1)    
-            
-            correct_pred = (y_pred_tags == y_test).float()
-            acc = correct_pred.sum() / len(correct_pred)
-            
-            acc = torch.round(acc * 100)
-            
-            return acc
+        accuracy = {"training": [], "testing": []}
+        mac_precision = {"training": [], "testing": []}
+        mic_precision = {"training": [], "testing": []}
+        mac_recall = {"training": [], "testing": []}
+        mic_recall = {"training": [], "testing": []}
+        mac_f1 = {"training": [], "testing": []}
+        mic_f1 = {"training": [], "testing": []}
 
         for ind, model in enumerate(self.networks):
 
             with torch.no_grad():
-                model.eval()
-                for X_batch, _ in self.test_loaders[ind]:
-                    X_batch = X_batch.to(device)
-                    y_test_pred = model(X_batch)
-                    _, y_pred_tags = torch.max(y_test_pred, dim = 1)
-                    y_pred_list.append(y_pred_tags.cpu().numpy())
-            y_pred_list = [a.squeeze().tolist() for a in y_pred_list]
 
+                model.eval() # activate evaluation mode
 
+                training_predictions = model(self.training_data["input"][ind].to(self.device))
+                testing_predictions = model(self.testing_data["input"][ind].to(self.device))
 
-            input_train = torch.FloatTensor(self.training_data["input"][ind]).to(model.device)
-            input_test = torch.FloatTensor(self.testing_data["input"][ind]).to(model.device)
+                # Convert one-hot to indices
+                _, train_pred_label = torch.max(torch.log_softmax(training_predictions.detach(), dim=1), dim=1)
+                _, test_pred_label = torch.max(torch.log_softmax(testing_predictions.detach(), dim=1), dim=1)
 
-            output_train = torch.log_softmax( model(input_train).to(model.device).detach() )
-            output_test = torch.log_softmax( model(input_test).to(model.device).detach() )
-            
-            predicted_label=model.predict(test[num_feat].to_numpy())
-            groundtruth_label=test['Crystal System'].to_numpy()
+                _, train_act_label = torch.max(self.training_data["output"][ind].to(self.device), dim=1)
+                _, test_act_label = torch.max(self.testing_data["output"][ind].to(self.device), dim=1)
 
-            accuracy = skmetrics.accuracy_score(predicted_label, groundtruth_label)
+                # Convert tensor to python lists
+                train_pred_label = train_pred_label.tolist()
+                test_pred_label = test_pred_label.tolist()
 
-            macro_precision=skmetrics.precision_score(predicted_label,groundtruth_label,average='macro')
-            micro_precision=skmetrics.precision_score(predicted_label,groundtruth_label,average='micro')
+                train_act_label = train_act_label.tolist()
+                test_act_label = test_act_label.tolist()
 
-            macro_recall=skmetrics.recall_score(predicted_label,groundtruth_label,average='macro')
-            micro_recall=skmetrics.recall_score(predicted_label,groundtruth_label,average='micro')
+                # Store results
+                accuracy["training"].append( skmetrics.accuracy_score(train_act_label, train_pred_label) )
+                accuracy["testing"].append( skmetrics.accuracy_score(test_act_label, test_pred_label) )
 
-            macro_f1=skmetrics.f1_score(predicted_label,groundtruth_label,average='macro')
-            micro_f1=skmetrics.f1_score(predicted_label,groundtruth_label,average='micro')
+                mac_precision["training"].append( skmetrics.precision_score(train_act_label, train_pred_label, average='macro') )
+                mac_precision["testing"].append( skmetrics.precision_score(test_act_label, test_pred_label, average='macro') )
 
-        return MAE_train,MSE_train,RMSE_train,R2_train,MAE_test,MSE_test,RMSE_test,R2_test
+                mic_precision["training"].append( skmetrics.precision_score(train_act_label, train_pred_label, average='micro') )
+                mic_precision["testing"].append( skmetrics.precision_score(test_act_label, test_pred_label, average='micro') )
+
+                mac_recall["training"].append( skmetrics.recall_score(train_act_label, train_pred_label, average='macro') )
+                mac_recall["testing"].append( skmetrics.recall_score(test_act_label, test_pred_label, average='macro') )
+
+                mic_recall["training"].append( skmetrics.recall_score(train_act_label, train_pred_label, average='micro') )
+                mic_recall["testing"].append( skmetrics.recall_score(test_act_label, test_pred_label, average='micro') )
+
+                mac_f1["training"].append( skmetrics.f1_score(train_act_label, train_pred_label, average='macro') )
+                mac_f1["testing"].append( skmetrics.f1_score(test_act_label, test_pred_label, average='macro') )
+
+                mic_f1["training"].append( skmetrics.f1_score(train_act_label, train_pred_label, average='micro') )
+                mic_f1["testing"].append( skmetrics.f1_score(test_act_label, test_pred_label, average='micro') )
         
-    pass
+        # Store
+        analytics_df = pd.DataFrame([accuracy["training"],
+                                     accuracy["testing"],
+                                     mac_precision["training"],
+                                     mac_precision["testing"],
+                                     mic_precision["training"],
+                                     mic_precision["testing"],
+                                     mac_recall["training"],
+                                     mac_recall["testing"],
+                                     mic_recall["training"],
+                                     mic_recall["testing"],
+                                     mac_f1["training"],
+                                     mac_f1["testing"],
+                                     mic_f1["training"],
+                                     mic_f1["testing"]]).transpose()
+
+        analytics_df.columns = ['acc_train',
+                                'acc_test',
+                                'mac_prec_train',
+                                'mac_prec_test',
+                                'mic_prec_train',
+                                'mic_prec_test',
+                                'mac_recall_train',
+                                'mac_recall_test',
+                                'mic_recall_train',
+                                'mic_recall_test',
+                                'mac_f1_train',
+                                'mac_f1_test',
+                                'mic_f1_train',
+                                'mic_f1_test']
+
+        self.analytics_df = analytics_df
+
+    def save_metrics(self, curr_time):
+
+        # Get the date of the training data used to train the models
+        prefix = self.parameters["models"][0][-15:-4]
+
+        # Write metrics to file
+        split_analytics_path = os.path.splitext(os.path.join(self.parameters["output_folder"], self.parameters["analytics_save_name"]))
+
+        analytics_file_path = split_analytics_path[0] + "_model" + prefix + "_metrics" + split_analytics_path[1]
+
+        self.analytics_df.to_csv(analytics_file_path, index=False)

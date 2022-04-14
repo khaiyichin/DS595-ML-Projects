@@ -7,7 +7,7 @@ if __name__ == "__main__":
 
     os.chdir(args.working_dir) # change to desired working directory
 
-    nn_trainer = utm.NNTrainer(args)
+    nn_evaluator = utm.NNEvaluator(args)
 
     # Run trainer
-    nn_trainer.run()
+    nn_evaluator.run()
