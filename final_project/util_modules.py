@@ -234,8 +234,11 @@ class NNTrainer():
         # Setup device
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         if self.verbose:
-            print("Device:\t\t\t{}".format(self.device))
-            if torch.cuda.is_available(): print('\t\t\t', torch.cuda.get_device_name(0))
+            if torch.cuda.is_available():
+                print("Device:\t\t\t{}".format(self.device), end='')
+                print('\t\t\t', torch.cuda.get_device_name(0))
+
+            else: print("Device:\t\t\t{}".format(self.device))
 
             sys.stdout.flush()
 
@@ -254,6 +257,7 @@ class NNTrainer():
 
             if self.verbose:
                 print("Optimizer:\n{}\n".format(opt))
+                sys.stdout.flush()
 
         # Assign loss function
         self.criterion = torch.nn.CrossEntropyLoss()
@@ -261,6 +265,47 @@ class NNTrainer():
         # Set up loggers
         self.losses_log = []
         self.analytics = []
+
+
+    def standardize(self, pandas_df):
+        """Standardize dataframe values using Z-score standardization.
+
+        Args:
+            pandas_df: Pandas dataframe.
+
+        Returns:
+            Tuple of pandas dataframe with standardized values and (mean, standard deviation) tuple.
+        """
+        return pandas_df.sub(pandas_df.mean(0), axis=1) / pandas_df.std(0), (pandas_df.mean(0), pandas_df.std(0) )
+
+
+    def normalize(self, pandas_df):
+        """Normalize dataframe values.
+
+        Args:
+            pandas_df: Pandas dataframe.
+            norm_type: 'full' for normalization using all the value in the dataframe,
+                    'freq' for normalization along each column.
+
+        Returns:
+            Tuple of pandas dataframe with normalized values and (min, max) tuple.
+        """
+
+        if self.parameters["normalization_type"] == 'full': # across the entire dataset
+            min_val = pandas_df.min().min()
+            max_val = pandas_df.max().max()
+
+            return (pandas_df - min_val) / (max_val - min_val), (min_val, max_val)
+
+        elif self.parameters["normalization_type"] == 'freq': # across each frequency (feature)
+            min_vals = pandas_df.min()
+            max_vals = pandas_df.max()
+            diff = max_vals - min_vals
+
+            return pandas_df.sub(min_vals, axis=1).div(diff, axis=1), (min_vals, max_vals)
+
+        else:
+            raise Exception('Unknown normalization type string.')
 
     def read_and_store_data(self):
 
@@ -270,12 +315,27 @@ class NNTrainer():
         self.training_data = {"filenames": [], "input": [], "output": []}
         self.testing_data = {"filenames": [], "input": [], "output": []}
 
+        self.preprocessing_params = []
+
         # Store training data and set up data loaders
         for csv_file in self.parameters["training_data"]:
             pd_data = pd.read_csv(os.path.join(self.parameters["input_folder"], csv_file))
 
+            # Check whether to preprocess data
+            if self.parameters["standardize"]:
+                pd_data_processed, params = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]))
+                self.preprocessing_params.append(params)
+
+            elif self.parameters["normalize"]:
+                pd_data_processed, params = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]))
+                self.preprocessing_params.append(params)
+
             # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe
-            input = torch.tensor(pd_data.iloc[:, :-5].values, dtype=torch.float32)
+            if self.preprocessing_params:
+                input = torch.tensor(pd_data_processed.values, dtype=torch.float32)
+            else:
+                input = torch.tensor(pd_data.iloc[:, :-5].values, dtype=torch.float32)
+
             output = torch.tensor(pd_data.iloc[:,-5:].values, dtype=torch.float32)
 
             self.train_loaders.append(self.setup_data_loaders(input, output))
@@ -328,18 +388,17 @@ class NNTrainer():
         mac_f1 = []
         mic_f1 = []
 
-        for _ in range(self.parameters["target_epochs"]):
+        for i in range(self.parameters["target_epochs"]):
             y_pred_lst = []
             y_act_lst = []
 
             for X, y in train_loader:
 
-                optimizer.zero_grad() # set gradients to zero
-
                 # Make predictions
                 output = network(X.to(self.device))
 
                 # Find the loss and then backpropagate it
+                optimizer.zero_grad() # set gradients to zero
                 loss = self.criterion(output, y.to(self.device))
                 loss.backward()
 
@@ -352,21 +411,24 @@ class NNTrainer():
 
                 y_pred_lst.extend(y_pred_ind.tolist())
                 y_act_lst.extend(y_act_ind.tolist())
-                # print('predicted', y_pred_ind, 'actual', y_act_ind) # debug
 
             # Store analytics for current epoch
-            losses.append( float(loss)/self.parameters["batch_size"] )
+            losses.append( float(loss.item())/self.parameters["batch_size"] )
 
-            accuracy.append( skmetrics.accuracy_score(y_pred_lst, y_act_lst) )
+            if self.verbose and i % 500 == 0:
+                print("\tEpoch {0}: Loss = {1}".format(i, losses[-1]))
+                sys.stdout.flush()
 
-            mac_precision.append( skmetrics.precision_score(y_pred_lst, y_act_lst, average='macro') )
-            mic_precision.append( skmetrics.precision_score(y_pred_lst, y_act_lst, average='micro') )
+            accuracy.append( skmetrics.accuracy_score(y_act_lst, y_pred_lst) )
 
-            mac_recall.append( skmetrics.recall_score(y_pred_lst, y_act_lst, average='macro') )
-            mic_recall.append( skmetrics.recall_score(y_pred_lst, y_act_lst, average='micro') )
+            mac_precision.append( skmetrics.precision_score(y_act_lst, y_pred_lst, average='macro') )
+            mic_precision.append( skmetrics.precision_score(y_act_lst, y_pred_lst, average='micro') )
 
-            mac_f1.append( skmetrics.f1_score(y_pred_lst, y_act_lst, average='macro') )
-            mic_f1.append( skmetrics.f1_score(y_pred_lst, y_act_lst, average='micro') )
+            mac_recall.append( skmetrics.recall_score(y_act_lst, y_pred_lst, average='macro') )
+            mic_recall.append( skmetrics.recall_score(y_act_lst, y_pred_lst, average='micro') )
+
+            mac_f1.append( skmetrics.f1_score(y_act_lst, y_pred_lst, average='macro') )
+            mic_f1.append( skmetrics.f1_score(y_act_lst, y_pred_lst, average='micro') )
 
         analytics_df = pd.DataFrame([accuracy,
                                      mac_precision,
@@ -425,6 +487,14 @@ class NNTrainer():
 
         self.parameters = {}
 
+        # Assign preprocessors
+        self.parameters["standardize"] = yaml_config["standardize"]
+        self.parameters["normalize"] = yaml_config["normalize"]["bool"]
+        self.parameters["normalization_type"] = yaml_config["normalize"]["type"]
+
+        if self.parameters["standardize"] and self.parameters["normalize"]:
+            raise Exception("Only one type of preprocessor can be used at a time.")
+
         # Assign optimizer
         self.parameters["optimizer_str"] = yaml_config["optimizerString"]
 
@@ -457,6 +527,8 @@ class NNTrainer():
         self.parameters["losses_save_name"] = yaml_config["paths"]["lossesSaveName"]
         self.parameters["analytics_save_name"] = yaml_config["paths"]["analyticsSaveName"]
 
+        sys.stdout.flush() # flush print statements
+
     def save_models(self, curr_time):
         """Save neural network models.
         """
@@ -478,6 +550,7 @@ class NNTrainer():
                 'model_state_dict': self.networks[i].state_dict(),
                 'optimizer_state_dict': self.optimizers[i].state_dict(),
                 'loss': self.criterion,
+                'preprocessing_params': self.preprocessing_params
             }, model_save_path)
 
     def save_analytics(self, curr_time):
