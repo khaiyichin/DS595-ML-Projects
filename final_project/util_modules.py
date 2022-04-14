@@ -388,25 +388,25 @@ class NNTrainer():
         mac_f1 = []
         mic_f1 = []
 
-        for i in range(self.parameters["target_epochs"]):
+        for i in range(1, self.parameters["target_epochs"]+1):
             y_pred_lst = []
             y_act_lst = []
 
             for X, y in train_loader:
 
                 # Make predictions
-                output = network(X.to(self.device))
+                predictions = network(X.to(self.device))
 
                 # Find the loss and then backpropagate it
                 optimizer.zero_grad() # set gradients to zero
-                loss = self.criterion(output, y.to(self.device))
+                loss = self.criterion(predictions, y.to(self.device).argmax(dim=1))
                 loss.backward()
 
                 # Update weights
                 optimizer.step()
 
                 # Obtain predicted and actual labels
-                _, y_pred_ind = torch.max(torch.log_softmax(output.detach(), dim=1), dim=1)
+                _, y_pred_ind = torch.max(torch.log_softmax(predictions.detach(), dim=1), dim=1)
                 _, y_act_ind = torch.max(y, dim=1)
 
                 y_pred_lst.extend(y_pred_ind.tolist())
