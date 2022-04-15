@@ -42,7 +42,7 @@ def normalize(pandas_df, norm_type):
         max_vals = pandas_df.max()
         diff = max_vals - min_vals
 
-        return pandas_df.sub(min_vals, axis=1).div(diff, axis=1)
+        return pandas_df.sub(min_vals.values, axis=1).div(diff.values, axis=1)
 
     else:
         raise Exception('Unknown normalization type string.')
@@ -57,7 +57,6 @@ def standardize(pandas_df):
         Pandas dataframe with standardized values.
     """
     return pandas_df.sub(pandas_df.mean(0), axis=1) / pandas_df.std(0)
-
 
 class DynamicNetwork(torch.nn.Module):
     """Dynamic neural network class.
@@ -230,6 +229,7 @@ class NNUtils():
     class UtilType(Enum):
         TRAINER = 1
         EVALUATOR = 2
+        ENSEMBLE = 3
 
     def __init__(self, args, verbose=True):
 
@@ -296,7 +296,7 @@ class NNUtils():
 
             diff = max_vals - min_vals
 
-            return pandas_df.sub(min_vals, axis=1).div(diff, axis=1), (min_vals, max_vals)
+            return pandas_df.sub(min_vals.values, axis=1).div(diff.values, axis=1), (min_vals, max_vals)
 
         else:
             raise Exception('Unknown normalization type string.')
@@ -377,11 +377,9 @@ class NNUtils():
         # Path parameters
         self.parameters["data_input_folder"] = yaml_config["paths"]["dataInputFolder"]
         self.parameters["output_folder"] = yaml_config["paths"]["outputFolder"]
-        self.parameters["training_data"] = yaml_config["paths"]["trainingData"]
-        self.parameters["analytics_save_name"] = yaml_config["paths"]["analyticsSaveName"]
 
         # Assign specific parameters
-        if self.class_type == self.UtilType.TRAINER: # trainer params
+        if self.util_type == self.UtilType.TRAINER: # trainer params
 
             # Assign target number of epochs to run
             self.parameters["target_epochs"] = int(yaml_config["targetEpochs"])
@@ -391,6 +389,9 @@ class NNUtils():
 
             self.parameters["model_save_name"] = yaml_config["paths"]["modelSaveName"]
             self.parameters["losses_save_name"] = yaml_config["paths"]["lossesSaveName"]
+
+            self.parameters["training_data"] = yaml_config["paths"]["trainingData"]
+            self.parameters["analytics_save_name"] = yaml_config["paths"]["analyticsSaveName"]
 
             # Assign optional parameters
             try:
@@ -403,10 +404,17 @@ class NNUtils():
             except Exception as e:
                 if self.verbose: print("Not setting dropout layers.")
 
-        elif self.class_type == self.UtilType.EVALUATOR: # evaluator params
+        elif self.util_type == self.UtilType.EVALUATOR: # evaluator params
             self.parameters["model_input_folder"] = yaml_config["paths"]["modelInputFolder"]
-            self.parameters["models"] = yaml_config["paths"]["models"]
+            self.parameters["training_data"] = yaml_config["paths"]["trainingData"]
             self.parameters["testing_data"] = yaml_config["paths"]["testingData"]
+            self.parameters["models"] = yaml_config["paths"]["models"]
+            self.parameters["analytics_save_name"] = yaml_config["paths"]["analyticsSaveName"]
+
+        elif self.util_type == self.UtilType.ENSEMBLE: # ensemble params
+            self.parameters["model_input_folder"] = yaml_config["paths"]["modelInputFolder"]
+            self.parameters["data_files"] = yaml_config["paths"]["dataFiles"]
+            self.parameters["models"] = yaml_config["paths"]["models"]
 
         else:
             raise Exception("Unknown caller type for read_yaml_config function.")
@@ -424,7 +432,7 @@ class NNUtils():
 
             nn = DynamicNetwork(self.parameters, self.verbose).to(self.device)
 
-            if self.class_type == self.UtilType.TRAINER:
+            if self.util_type == self.UtilType.TRAINER:
                 opt = self.get_optimizer(self.parameters["optimizer_str"], nn)
                 self.optimizers.append(opt)
 
@@ -432,7 +440,7 @@ class NNUtils():
                     print("Optimizer:\n{}\n".format(opt))
                     sys.stdout.flush()
 
-            elif self.class_type == self.UtilType.EVALUATOR:
+            elif self.util_type == self.UtilType.EVALUATOR or self.util_type == self.UtilType.ENSEMBLE:
                 nn.load_state_dict(loaded_state_dicts[i]["model_state_dict"])
                 self.preprocessing_params = loaded_state_dicts[i]["preprocessing_params"]
                 nn.eval()
@@ -441,6 +449,19 @@ class NNUtils():
                 raise Exception("Unknown caller type for the setup_networks function.")
 
             self.networks.append(nn)
+
+    def import_models(self):
+
+        loaded_state_dicts = []
+
+        # Iterate through all k models
+        for i in range(self.parameters["k_fold_cv"]):
+
+            loaded_state_dicts.append(
+                torch.load( os.path.join(self.parameters["model_input_folder"],
+                                         self.parameters["models"][i]), map_location=self.device ) )
+
+        self.setup_networks(loaded_state_dicts)
 
     def get_optimizer(self, opt_str, network):
 
@@ -456,58 +477,36 @@ class NNUtils():
     def read_and_store_data(self):
 
         # Store training data and set up data loaders
-        for ind, csv_file in enumerate(self.parameters["training_data"]):
-            pd_data = pd.read_csv(os.path.join(self.parameters["data_input_folder"], csv_file))
+        if self.util_type == self.UtilType.ENSEMBLE:
 
-            # Check whether to preprocess data
-            if self.parameters["standardize"]:
+            pass
 
-                if self.class_type == self.UtilType.EVALUATOR:
-                    pd_data_processed, _ = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]),
-                                                            self.preprocessing_params[ind])
-                else:
-                    pd_data_processed, params = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]))
-                    self.preprocessing_params.append(params)
+        else: # both trainers and evaluators
 
-            elif self.parameters["normalize"]:
-
-                if self.class_type == self.UtilType.EVALUATOR:
-                    pd_data_processed, _ = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]),
-                                                               self.preprocessing_params[ind])
-                else:
-                    pd_data_processed, params = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]))
-                    self.preprocessing_params.append(params)
-
-            # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe (if not preprocessed already)
-            if self.preprocessing_params:
-                input = torch.tensor(pd_data_processed.values, dtype=torch.float32)
-            else:
-                input = torch.tensor(pd_data.iloc[:, :-5].values, dtype=torch.float32)
-
-            output = torch.tensor(pd_data.iloc[:,-5:].values, dtype=torch.float32)
-
-            self.train_loaders.append(self.setup_data_loaders(input, output))
-
-            self.training_data["filenames"].append(csv_file)
-            self.training_data["input"].append(input)
-            self.training_data["output"].append(output)
-
-        # Store testing data (only applicable to evaluators)
-        if self.class_type == self.UtilType.EVALUATOR:
-
-            for ind, csv_file in enumerate(self.parameters["testing_data"]):
+            # Store training data
+            for ind, csv_file in enumerate(self.parameters["training_data"]):
                 pd_data = pd.read_csv(os.path.join(self.parameters["data_input_folder"], csv_file))
 
-                # Apply preprocessing from training data
+                # Check whether to preprocess data
                 if self.parameters["standardize"]:
-                    pd_data_processed, _ = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]),
-                                                            self.preprocessing_params[ind])
+
+                    if self.util_type == self.UtilType.EVALUATOR:
+                        pd_data_processed, _ = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]),
+                                                                self.preprocessing_params[ind])
+                    else:
+                        pd_data_processed, params = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]))
+                        self.preprocessing_params.append(params)
 
                 elif self.parameters["normalize"]:
-                    pd_data_processed, _ = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]),
-                                                          self.preprocessing_params[ind])
 
-                # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe
+                    if self.util_type == self.UtilType.EVALUATOR:
+                        pd_data_processed, _ = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]),
+                                                                    self.preprocessing_params[ind])
+                    else:
+                        pd_data_processed, params = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]))
+                        self.preprocessing_params.append(params)
+
+                # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe (if not preprocessed already)
                 if self.preprocessing_params:
                     input = torch.tensor(pd_data_processed.values, dtype=torch.float32)
                 else:
@@ -515,9 +514,38 @@ class NNUtils():
 
                 output = torch.tensor(pd_data.iloc[:,-5:].values, dtype=torch.float32)
 
-                self.testing_data["filenames"].append(csv_file)
-                self.testing_data["input"].append(input)
-                self.testing_data["output"].append(output)
+                self.train_loaders.append(self.setup_data_loaders(input, output))
+
+                self.training_data["filenames"].append(csv_file)
+                self.training_data["input"].append(input)
+                self.training_data["output"].append(output)
+
+            # Store testing data (only applicable to evaluators)
+            if self.util_type == self.UtilType.EVALUATOR:
+
+                for ind, csv_file in enumerate(self.parameters["testing_data"]):
+                    pd_data = pd.read_csv(os.path.join(self.parameters["data_input_folder"], csv_file))
+
+                    # Apply preprocessing from training data
+                    if self.parameters["standardize"]:
+                        pd_data_processed, _ = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]),
+                                                                self.preprocessing_params[ind])
+
+                    elif self.parameters["normalize"]:
+                        pd_data_processed, _ = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]),
+                                                                self.preprocessing_params[ind])
+
+                    # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe
+                    if self.preprocessing_params:
+                        input = torch.tensor(pd_data_processed.values, dtype=torch.float32)
+                    else:
+                        input = torch.tensor(pd_data.iloc[:, :-5].values, dtype=torch.float32)
+
+                    output = torch.tensor(pd_data.iloc[:,-5:].values, dtype=torch.float32)
+
+                    self.testing_data["filenames"].append(csv_file)
+                    self.testing_data["input"].append(input)
+                    self.testing_data["output"].append(output)
 
 class NNTrainer(NNUtils):
 
@@ -525,7 +553,7 @@ class NNTrainer(NNUtils):
 
         super().__init__(args, verbose)
 
-        self.class_type = self.UtilType.TRAINER # assign identity to this class
+        self.util_type = self.UtilType.TRAINER # assign identity to this class
 
         # Parse configuration file
         self.read_yaml_config(args.config)
@@ -645,6 +673,9 @@ class NNTrainer(NNUtils):
             model_save_path = split_path[0] + str(i+1) + "_data" + prefix + \
                               "_model" + curr_time.strftime("%m%d%y_%H%M") + split_path[1]
 
+            # TODO: 
+            # - instead of saving 4 files for 4 models, save all 4 state_dict in a list so that we get only 1 .pth file
+            # - save self.parameters so that yaml config file is much shorter
             torch.save({
                 'model_state_dict': self.networks[i].state_dict(),
                 'optimizer_state_dict': self.optimizers[i].state_dict(),
@@ -685,7 +716,7 @@ class NNEvaluator(NNUtils):
 
         super().__init__(args, verbose)
 
-        self.class_type = self.UtilType.EVALUATOR
+        self.util_type = self.UtilType.EVALUATOR
 
         self.read_yaml_config(args.config)
 
@@ -694,19 +725,6 @@ class NNEvaluator(NNUtils):
         self.import_models()
 
         self.read_and_store_data()
-
-    def import_models(self):
-
-        loaded_state_dicts = []
-
-        # Iterate through all k models
-        for i in range(self.parameters["k_fold_cv"]):
-
-            loaded_state_dicts.append(
-                torch.load( os.path.join(self.parameters["model_input_folder"],
-                                         self.parameters["models"][i]), map_location=self.device ) )
-
-        self.setup_networks(loaded_state_dicts)
 
     def run(self):
 
@@ -815,3 +833,60 @@ class NNEvaluator(NNUtils):
         analytics_file_path = split_analytics_path[0] + "_model" + prefix + "_metrics" + split_analytics_path[1]
 
         self.analytics_df.to_csv(analytics_file_path, index=False)
+
+class NNEnsemble(NNUtils):
+
+    def __init__(self, args, verbose=True):
+
+        super().__init__(args, verbose)
+
+        self.util_type = self.UtilType.ENSEMBLE
+
+        self.read_yaml_config(args.config)
+
+        self.setup_device()
+
+        self.import_models()
+
+    def make_prediction(self, pd_input):
+        """Make predictions based on given inputs.
+
+        The ensemble adds up each of the networks raw predictions, and then applies a softmax function to
+        classify.
+
+        Args:
+            input: A Pandas dataframe with rows of feature values.
+
+        Returns:
+            The predicted class index integer(s) in a python list.
+        """
+
+        pred = torch.zeros(self.networks[0].network[-1].out_features)
+
+        for ind, model in enumerate(self.networks):
+
+            # Preprocess input
+            if self.parameters["standardize"]:
+                proc_pd_input, _ = self.standardize(pd_input, self.preprocessing_params[ind])
+
+            elif self.parameters["normalize"]:
+                proc_pd_input, _ = self.normalize(pd_input, self.preprocessing_params[ind])
+
+            else:
+                proc_pd_input = pd_input
+
+            # Make prediction
+            with torch.no_grad():
+                model.eval()
+
+                pred = torch.add(pred, model(torch.tensor(proc_pd_input.values, dtype=torch.float32).to(self.device)))
+
+        _, pred_class_ind = torch.max(torch.log_softmax(pred.detach(), dim=1), dim=1)
+
+        return [*map(int, pred_class_ind)]
+
+def evaluate_predictions(act_output, pred_output):
+
+    print(skmetrics.classification_report(act_output, pred_output))
+
+    return skmetrics.confusion_matrix(act_output, pred_output)
