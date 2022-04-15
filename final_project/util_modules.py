@@ -456,21 +456,29 @@ class NNUtils():
     def read_and_store_data(self):
 
         # Store training data and set up data loaders
-        for csv_file in self.parameters["training_data"]:
+        for ind, csv_file in enumerate(self.parameters["training_data"]):
             pd_data = pd.read_csv(os.path.join(self.parameters["data_input_folder"], csv_file))
 
             # Check whether to preprocess data
             if self.parameters["standardize"]:
-                pd_data_processed, params = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]))
-                self.preprocessing_params.append(params)
 
-                # TODO: can check to see if the loaded params match
+                if self.class_type == self.UtilType.EVALUATOR:
+                    pd_data_processed, _ = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]),
+                                                            self.preprocessing_params[ind])
+                else:
+                    pd_data_processed, params = self.standardize(pd_data.drop(columns=pd_data.columns[-5:]))
+                    self.preprocessing_params.append(params)
 
             elif self.parameters["normalize"]:
-                pd_data_processed, params = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]))
-                self.preprocessing_params.append(params)
 
-            # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe
+                if self.class_type == self.UtilType.EVALUATOR:
+                    pd_data_processed, _ = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]),
+                                                               self.preprocessing_params[ind])
+                else:
+                    pd_data_processed, params = self.normalize(pd_data.drop(columns=pd_data.columns[-5:]))
+                    self.preprocessing_params.append(params)
+
+            # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe (if not preprocessed already)
             if self.preprocessing_params:
                 input = torch.tensor(pd_data_processed.values, dtype=torch.float32)
             else:
@@ -500,7 +508,11 @@ class NNUtils():
                                                           self.preprocessing_params[ind])
 
                 # Split 5 classes with one hot encoding => 5 columns at the end of the dataframe
-                input = torch.tensor(pd_data.iloc[:, :-5].values, dtype=torch.float32)
+                if self.preprocessing_params:
+                    input = torch.tensor(pd_data_processed.values, dtype=torch.float32)
+                else:
+                    input = torch.tensor(pd_data.iloc[:, :-5].values, dtype=torch.float32)
+
                 output = torch.tensor(pd_data.iloc[:,-5:].values, dtype=torch.float32)
 
                 self.testing_data["filenames"].append(csv_file)
@@ -668,8 +680,6 @@ class NNTrainer(NNUtils):
             df.to_csv(analytics_file_path, index=False)
 
 class NNEvaluator(NNUtils):
-
-    # Need to apply log_softmax for validation and testing
 
     def __init__(self, args, verbose=True):
 
