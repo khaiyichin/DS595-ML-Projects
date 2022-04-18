@@ -864,7 +864,7 @@ class NNEnsemble(NNUtils):
             The predicted class index integer(s) in a python list.
         """
 
-        pred = torch.zeros(self.networks[0].network[-1].out_features)
+        pred = torch.zeros(self.networks[0].network[-1].out_features).to(self.device)
 
         for ind, model in enumerate(self.networks):
 
