@@ -27,7 +27,7 @@ if __name__ == "__main__":
         
         # Identify epoch number
         if '/e5000' in csv_file: attributes.append('e5k')
-        else: attributes.append('e10k')
+        else: attributes.append('e1k')
         
         # Identify learning rate
         if '/lr005' in csv_file: attributes.append('lr5')
@@ -48,7 +48,7 @@ if __name__ == "__main__":
                                               "acc_test": df['acc_test'].values}
 
     # Create multicolumn and multirow dataframes
-    row_arr = [["e5k", "e10k"], ["lr5", "lr1"], ["k" + str(i+1) for i in range(4)]]
+    row_arr = [["e5k", "e1k"], ["lr5", "lr1"], ["k" + str(i+1) for i in range(4)]]
     col_arr = [["sgd", "adam"], ["b50", "b100"]]
 
     row_ind = pd.MultiIndex.from_product(row_arr)

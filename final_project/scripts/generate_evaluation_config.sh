@@ -21,7 +21,7 @@ do
     # Add lines to newly created evaluation config file
     sed -i "s|paths:|paths:\n  modelInputFolder: \"./\"|" $d/turing_evaluation_config.yaml
     sed -i "s|  inputFolder: \"/home/kchin/DS595-ML-Projects/final_project/data/\"|  dataInputFolder: \"/home/kchin/DS595-ML-Projects/final_project/data/\"|g" $d/turing_evaluation_config.yaml
-    sed -i "s|    - \"041322_1706_test_4-fold-4.csv\"|    - \"041322_1706_test_4-fold-4.csv\"\n  models:|" $d/turing_evaluation_config.yaml
+    sed -i "s|    - \"041822_1124_test_4-fold-4.csv\"|    - \"041822_1124_test_4-fold-4.csv\"\n  models:|" $d/turing_evaluation_config.yaml
     sed -i "s|  models:|  models:\n    - \"$m1\"|" $d/turing_evaluation_config.yaml
     sed -i "s|    - \"$m1\"|    - \"$m1\"\n    - \"$m2\"|" $d/turing_evaluation_config.yaml
     sed -i "s|    - \"$m2\"|    - \"$m2\"\n    - \"$m3\"|" $d/turing_evaluation_config.yaml
