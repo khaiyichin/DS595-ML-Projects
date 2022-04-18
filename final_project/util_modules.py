@@ -13,9 +13,10 @@ import argparse
 def parse_arguments():
     # Parse arguments
     parser = argparse.ArgumentParser(description="DS 595-ML Final Project")
-    parser.add_argument('config', type=str, help='path to configuration file')
-    parser.add_argument('working_dir', type=str, help='working directory to run the training')
+    parser.add_argument('working_dir', type=str, help='working directory to run training/evaluation/validation')
+    parser.add_argument('--config', type=str, help='path to configuration file (required for training and evaluation)')
     parser.add_argument('--no_save', action="store_true", help='path to configuration file')
+    parser.add_argument('-v', type=str, help='run validation flag with the desired validation CSV file')
 
     return parser.parse_args()
 
@@ -464,6 +465,8 @@ class NNUtils():
         self.setup_networks(loaded_state_dicts)
 
     def get_optimizer(self, opt_str, network):
+
+        # TODO: remove opt_str argument (since we can just use self.parameters)
 
         if opt_str.lower() == "sgd":
             return torch.optim.SGD(network.parameters(), lr=self.parameters["learning_rate"]) # using no momentum
