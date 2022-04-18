@@ -61,19 +61,19 @@ if __name__ == "__main__":
         
             # Determine attributes for storing into dataframe
             # Identify epoch number
-            if "/e5000" in csv_file: e = "e5k"
+            if "/e5000" in root: e = "e5k"
             else: e = "e1k"
             
             # Identify learning rate
-            if "/lr005" in csv_file: lr = "lr5"
+            if "/lr005" in root: lr = "lr5"
             else: lr = "lr1"
 
             # Identify optimizer
-            if "/adam" in csv_file: opt = "adam"
+            if "/adam" in root: opt = "adam"
             else: opt = "sgd"
 
             # Identify batch number
-            if "/b50" in csv_file: b = "b50"
+            if "/b50" in root: b = "b50"
             else: b = "b100"
 
             # Store accuracy score
