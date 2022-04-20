@@ -3,13 +3,12 @@ import os
 import pandas as pd
 import numpy as np
 import sklearn.metrics as skmetrics
-
+from datetime import datetime
 """
-This script isn't well written because of time constraints.
+This script isn't well written because of time constraints. TODO: refactor code
 
 What it does here is to use a validation data file (whose filename is passed as an argument in calling this python
-Python script) and create ensemble neural networks to make predictions on it. The ensemble NNs live in multiple
-
+Python script) and create ensemble neural networks to make predictions on it.
 """
 
 if __name__ == "__main__":
@@ -82,4 +81,7 @@ if __name__ == "__main__":
     # Write the data to CSV
     os.chdir(args.working_dir) # change to back to desired working directory
 
-    validation_results_df.to_csv("validation_analytics.csv")
+    curr_time = datetime.now()
+
+    analytics_file_path = "validation_data_" + curr_time.strftime("%m%d%y_%H%M") + ".csv"
+    validation_results_df.to_csv(analytics_file_path)
